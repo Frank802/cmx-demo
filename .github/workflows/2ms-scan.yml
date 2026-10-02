@@ -1,0 +1,39 @@
+name: 2ms Scan
+on:
+  workflow_dispatch:
+
+permissions:
+  security-events: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
+        with:
+          fetch-depth: 0
+      - name: Run 2ms
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -v "$PWD":/repo checkmarx/2ms \
+            git /repo --stdout-format sarif \
+            --report-path /repo/artifacts/2ms.sarif \
+            --ignore-on-exit results
+      - name: Normalize SARIF locations
+        # 2ms git locations are commands, not URIs; retain the commit in the message.
+        run: |
+          jq '.runs[].results[]? |= (
+                (.locations[0].physicalLocation.artifactLocation.uri // "") as $uri
+                | if ($uri | test("^git show [0-9a-f]+:")) then
+                    ($uri | capture("^git show (?<sha>[0-9a-f]+):(?<path>.*)$")) as $m
+                    | .locations[0].physicalLocation.artifactLocation.uri = ($m.path | split("/") | map(@uri) | join("/"))
+                    | .message.text = (.message.text | rtrimstr(".")) + " in commit \($m.sha)."
+                  else . end
+              )' artifacts/2ms.sarif > artifacts/2ms.sarif.tmp
+          mv artifacts/2ms.sarif.tmp artifacts/2ms.sarif
+      - name: Upload SARIF
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: artifacts/2ms.sarif
